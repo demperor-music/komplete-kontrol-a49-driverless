@@ -1,0 +1,79 @@
+name: Bug report
+description: Report a problem with the Komplete Kontrol A49 extension
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem. Please include as much
+        detail as you can; controller/HID issues are difficult to diagnose
+        without the exact environment.
+
+  - type: input
+    id: bitwig
+    attributes:
+      label: Bitwig Studio version
+      placeholder: "e.g. 6.0.1"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and version
+      placeholder: "e.g. Ubuntu 24.04, macOS 15, Windows 11"
+    validations:
+      required: true
+
+  - type: input
+    id: keyboard
+    attributes:
+      label: Keyboard model and firmware
+      placeholder: "Komplete Kontrol A49; firmware if known"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: hid
+    attributes:
+      label: Can the HID device be opened?
+      options:
+        - "Yes — display/LEDs work"
+        - "No — Bitwig shows 'A49 HID unavailable'"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What did you do, what did you expect, and what happened?
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and diagnostics
+      description: |
+        Paste relevant Bitwig console output and the output of:
+        `lsusb -d 17cc:1740`, `ls -l /dev/hidraw*`, and `getfacl /dev/hidrawX`.
+      render: text
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I am using the latest release or a current source build.
+          required: true
+        - label: I have disabled other A49 controller integrations.
+          required: true
+        - label: I have installed the udev rule (Linux).
+          required: true

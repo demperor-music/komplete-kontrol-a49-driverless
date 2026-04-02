@@ -1,0 +1,20 @@
+# Native Instruments Komplete Kontrol A49 (USB 17cc:1740)
+#
+# The Bitwig extension talks to the keyboard through /dev/hidraw*, not just
+# through MIDI. hidraw device nodes are root-only by default, so grant the
+# locally logged-in desktop user access via systemd-logind's uaccess ACL.
+#
+# Install:
+#   sudo install -Dm644 99-komplete-kontrol-a49.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger --subsystem-match=hidraw
+#
+# Then unplug and reconnect the keyboard.
+
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1740", TAG+="uaccess", MODE="0660"
+
+# Alternative for systems without systemd-logind uaccess support: add your
+# user to the "plugdev" group (or replace it with a group of your choice) and
+# uncomment the following line instead of the uaccess rule above.
+#
+#SUBSYSTEM=="hidraw", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1740", MODE="0660", GROUP="plugdev"
