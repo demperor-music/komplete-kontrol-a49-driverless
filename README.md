@@ -22,7 +22,7 @@ workaround.
 [Features](#features) · [Installation](#installation) · [Manual](#manual) ·
 [How it works](#how-it-works) · [Reverse engineering](#reverse-engineering) ·
 [FAQ](#faq) · [Troubleshooting](#troubleshooting) ·
-[License](#license-and-trademarks)
+[Releases](#releases) · [License](#license-and-trademarks)
 
 > [!NOTE]
 > **AI disclosure:** AI tools were used to generate the reverse-engineering
@@ -411,6 +411,13 @@ Bitwig's MIDI input handling.
   database, touch strip or hardware arpeggiator UI.
 - The protocol is reverse-engineered and not covered by a stability guarantee.
 - There are currently no automated tests.
+
+## Releases
+
+Releases are automated. A commit whose title matches
+`x.y.z release: <summary>` builds the extension and publishes the
+`.bwextension` plus a documentation zip. See
+[`docs/RELEASING.md`](docs/RELEASING.md) for the release process.
 
 ## Questions, bug reports and contributions
 

@@ -29,5 +29,7 @@ uses [Semantic Versioning](https://semver.org/).
   including the working A49 transport preset and HID send controls.
 - `tools/reverse-engineering`, cleaned-up HID capture, probing and display
   extraction utilities.
+- Automated release workflow triggered by `x.y.z release: <summary>` commit
+  titles, publishing the `.bwextension` and a documentation zip.
 
 [0.1.0]: ../../releases/tag/v0.1.0
