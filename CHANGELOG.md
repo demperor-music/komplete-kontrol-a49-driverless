@@ -16,6 +16,8 @@ uses [Semantic Versioning](https://semver.org/).
   integration.
 - 128×32 OLED display with track status cards, action messages and octave
   indication.
+- Long track names and message details scroll horizontally with a ping-pong
+  motion instead of wrapping onto a second line.
 - LED feedback with dim/bright states and a reduced Shift layer.
 - Four switchable knob CC pages and CC output for HID-only actions.
 - Bitwig arpeggiator editing for mode, octaves, rate, gate, shuffle and

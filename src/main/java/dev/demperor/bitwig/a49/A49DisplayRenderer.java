@@ -3,6 +3,7 @@ package dev.demperor.bitwig.a49;
 import java.awt.Color;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
+import java.awt.Shape;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.util.List;
@@ -14,6 +15,11 @@ import java.util.Locale;
  * <p>The display is addressed as four 8-pixel-high pages. The packed
  * framebuffer uses 0xFF for a black pixel and clears a bit for a lit pixel,
  * matching the controller's page-oriented format.</p>
+ *
+ * <p>Long text is kept on one line and can be scrolled horizontally by passing
+ * a scroll offset to the render methods; see
+ * {@link #messageScrollMaxOffset(String)} and
+ * {@link #trackNameScrollMaxOffset(String)}.</p>
  */
 public final class A49DisplayRenderer
 {
@@ -101,6 +107,11 @@ public final class A49DisplayRenderer
 
     public byte[] renderMessageFrame(final String text)
     {
+        return this.renderMessageFrame(text, 0);
+    }
+
+    public byte[] renderMessageFrame(final String text, final int scrollOffset)
+    {
         final MessageLayout layout = this.parseLayout(text);
         final BufferedImage image = this.newCanvas();
         final Graphics2D g = image.createGraphics();
@@ -113,11 +124,11 @@ public final class A49DisplayRenderer
                     this.drawPrompt(g, layout);
                     break;
                 case CENTERED:
-                    this.drawCentered(g, layout);
+                    this.drawCentered(g, layout, scrollOffset);
                     break;
                 case CARD:
                 default:
-                    this.drawCard(g, layout);
+                    this.drawCard(g, layout, scrollOffset);
                     break;
             }
         }
@@ -130,6 +141,11 @@ public final class A49DisplayRenderer
 
     public byte[] renderTrackFrame(final String trackType, final String trackName, final boolean mute, final boolean solo, final String volumeText, final boolean arm)
     {
+        return this.renderTrackFrame(trackType, trackName, mute, solo, volumeText, arm, 0);
+    }
+
+    public byte[] renderTrackFrame(final String trackType, final String trackName, final boolean mute, final boolean solo, final String volumeText, final boolean arm, final int nameScrollOffset)
+    {
         final BufferedImage image = this.newCanvas();
         final Graphics2D g = image.createGraphics();
         try
@@ -137,7 +153,7 @@ public final class A49DisplayRenderer
             this.prepare(g);
             final IconType iconType = resolveTrackIconType(trackType);
             this.drawIcon(g, iconType, TRACK_ICON_X, TRACK_ICON_Y);
-            this.drawText(g, TRACK_NAME_X, TRACK_NAME_Y, truncateToWidth(trackName, WIDTH - TRACK_NAME_X - 1));
+            this.drawScrollingText(g, TRACK_NAME_X, TRACK_NAME_Y, WIDTH - TRACK_NAME_X - 1, normalize(trackName), nameScrollOffset);
 
             this.drawBitmapIcon(g, arm ? this.recordArmOnIcon : this.recordArmOffIcon, TRACK_RECORD_ARM_X, TRACK_TOGGLE_Y);
             this.drawBitmapIcon(g, solo ? this.soloOnIcon : this.soloOffIcon, TRACK_SOLO_X, TRACK_TOGGLE_Y);
@@ -162,13 +178,32 @@ public final class A49DisplayRenderer
         try
         {
             this.prepare(g);
-            this.drawCard(g, layout);
+            this.drawCard(g, layout, 0);
         }
         finally
         {
             g.dispose();
         }
         return this.packFromImage(image);
+    }
+
+    /** Maximum horizontal scroll offset for a message, in pixels. */
+    public int messageScrollMaxOffset(final String text)
+    {
+        final MessageLayout layout = this.parseLayout(text);
+        final String scrollText = this.scrollableText(layout);
+        if (scrollText.isEmpty())
+            return 0;
+        final int viewportWidth = layout.layoutType == LayoutType.CARD
+            ? WIDTH - CARD_TEXT_X - 1
+            : WIDTH - 2;
+        return Math.max(0, this.font.measureText(scrollText) - viewportWidth);
+    }
+
+    /** Maximum horizontal scroll offset for a track name, in pixels. */
+    public int trackNameScrollMaxOffset(final String trackName)
+    {
+        return Math.max(0, this.font.measureText(normalize(trackName)) - (WIDTH - TRACK_NAME_X - 1));
     }
 
     private static A49BitmapFont loadFont(final String path)
@@ -210,19 +245,14 @@ public final class A49DisplayRenderer
         g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_SPEED);
     }
 
-    private void drawCard(final Graphics2D g, final MessageLayout layout)
+    private void drawCard(final Graphics2D g, final MessageLayout layout, final int scrollOffset)
     {
         this.drawIcon(g, layout.iconType, CARD_ICON_X, CARD_ICON_Y);
         this.drawText(g, CARD_TEXT_X, CARD_HEADER_Y, truncateToWidth(layout.header, WIDTH - CARD_TEXT_X - 1));
 
-        final List<String> detailLines = this.wrapDetail(layout.detail, WIDTH - CARD_TEXT_X - 1, 2);
-        if (detailLines.size() == 1)
-            this.drawText(g, CARD_TEXT_X, CARD_DETAIL_Y, detailLines.get(0));
-        else if (detailLines.size() >= 2)
-        {
-            this.drawText(g, CARD_TEXT_X, 14, detailLines.get(0));
-            this.drawText(g, CARD_TEXT_X, 23, detailLines.get(1));
-        }
+        final String detail = normalize(layout.detail);
+        if (!detail.isEmpty())
+            this.drawScrollingText(g, CARD_TEXT_X, CARD_DETAIL_Y, WIDTH - CARD_TEXT_X - 1, detail, scrollOffset);
     }
 
     private void drawPrompt(final Graphics2D g, final MessageLayout layout)
@@ -233,23 +263,46 @@ public final class A49DisplayRenderer
         this.drawCenteredLine(g, bottom, 17);
     }
 
-    private void drawCentered(final Graphics2D g, final MessageLayout layout)
+    private void drawCentered(final Graphics2D g, final MessageLayout layout, final int scrollOffset)
     {
-        final String text = (layout.header + (layout.detail.isEmpty() ? "" : " " + layout.detail)).trim();
-        final List<String> lines = this.wrapDetail(text, WIDTH - 2, 2);
-        final int totalHeight = (lines.size() * this.font.getLineHeight()) + ((lines.size() - 1) * 2);
-        int y = Math.max(0, (HEIGHT - totalHeight) / 2);
-        for (final String line : lines)
-        {
-            this.drawCenteredLine(g, line, y);
-            y += this.font.getLineHeight() + 2;
-        }
+        final String text = this.scrollableText(layout);
+        final int y = Math.max(0, (HEIGHT - this.font.getLineHeight()) / 2);
+        if (this.font.measureText(text) <= WIDTH - 2)
+            this.drawCenteredLine(g, text, y);
+        else
+            this.drawScrollingText(g, 1, y, WIDTH - 2, text, scrollOffset);
     }
 
     private void drawCenteredLine(final Graphics2D g, final String text, final int y)
     {
         final int x = Math.max(0, (WIDTH - this.font.measureText(text)) / 2);
         this.drawText(g, x, y, text);
+    }
+
+    private void drawScrollingText(final Graphics2D g, final int x, final int y, final int maxWidth, final String text, final int scrollOffset)
+    {
+        if (text == null || text.isEmpty() || maxWidth <= 0)
+            return;
+
+        final Shape previousClip = g.getClip();
+        try
+        {
+            g.setClip(x, y, maxWidth, this.font.getLineHeight() + 2);
+            this.drawText(g, x - Math.max(0, scrollOffset), y, text);
+        }
+        finally
+        {
+            g.setClip(previousClip);
+        }
+    }
+
+    private String scrollableText(final MessageLayout layout)
+    {
+        if (layout.layoutType == LayoutType.CARD)
+            return normalize(layout.detail);
+        if (layout.layoutType == LayoutType.CENTERED)
+            return (layout.header + (layout.detail.isEmpty() ? "" : " " + layout.detail)).trim();
+        return "";
     }
 
     private void drawText(final Graphics2D g, final int x, final int y, final String text)
@@ -411,10 +464,14 @@ public final class A49DisplayRenderer
         }
         else
         {
-            final List<String> lines = this.wrapDetail(parsed, WIDTH - 2, 2);
-            header = lines.get(0);
-            detail = lines.size() > 1 ? lines.get(1) : "";
+            // Keep the full string. Long single-line messages are rendered as a
+            // centered marquee instead of being wrapped onto a second line.
+            header = parsed;
+            detail = "";
         }
+
+        if (detail.isEmpty() && header.length() > 14)
+            return new MessageLayout(header, "", iconFor(header, detail, parsed), LayoutType.CENTERED);
 
         final String canonicalHeader = canonicalHeader(header, detail);
         final IconType icon = iconFor(canonicalHeader, detail, parsed);

@@ -45,6 +45,12 @@ public final class A49HidService
     };
     private static final int DISPLAY_INTER_PACKET_DELAY_MS = 40;
 
+    private static final int SCROLL_INTERVAL_MS = 80;
+    private static final int SCROLL_STEP_PX = 2;
+    private static final int SCROLL_INITIAL_PAUSE_TICKS = 8;
+    private static final int SCROLL_EDGE_PAUSE_TICKS = 12;
+    private static final int ANIMATION_POLL_MS = 20;
+
     private final ConcurrentLinkedQueue<A49HidEvent> eventQueue;
     private final A49Decoder decoder;
     private final A49LedState ledState;
@@ -59,6 +65,14 @@ public final class A49HidService
     private volatile Set<A49Action> currentPhysicalButtons = EnumSet.noneOf(A49Action.class);
     private volatile Set<A49Action> latchedActions = EnumSet.noneOf(A49Action.class);
     private volatile byte lastOctaveIndicator = (byte) A49Mappings.INPUT_OCTAVE_STATE_BASE;
+
+    private volatile Thread displayAnimationThread;
+    private volatile String currentMessageText;
+    private volatile TrackFrame currentTrackFrame;
+    private volatile int displayScrollOffset;
+    private volatile int displayScrollDirection = 1;
+    private volatile int displayScrollPauseTicks;
+    private volatile long nextDisplayScrollTimeMs;
 
     public A49HidService(final ConcurrentLinkedQueue<A49HidEvent> eventQueue)
     {
@@ -109,6 +123,7 @@ public final class A49HidService
             this.latchedActions = EnumSet.noneOf(A49Action.class);
             this.lastOctaveIndicator = (byte) A49Mappings.INPUT_OCTAVE_STATE_BASE;
             this.updateLeds(true);
+            this.startDisplayAnimationThread();
         }
         catch (final IOException | RuntimeException ex)
         {
@@ -133,6 +148,9 @@ public final class A49HidService
     public void stop()
     {
         this.running.set(false);
+        this.stopDisplayAnimationThread();
+        this.currentMessageText = null;
+        this.currentTrackFrame = null;
         this.displayInitialized = false;
         this.lastLedPayload = null;
         this.lastDisplayFramebuffer = null;
@@ -171,7 +189,10 @@ public final class A49HidService
             this.ensureDisplayInitializedLocked();
             if (!this.displayInitialized)
                 return;
-            this.sendDisplayFramebufferLocked(this.displayRenderer.renderMessageFrame(text), false);
+            this.currentMessageText = text;
+            this.currentTrackFrame = null;
+            this.resetDisplayScrollState();
+            this.sendDisplayFramebufferLocked(this.displayRenderer.renderMessageFrame(text, 0), false);
         }
     }
 
@@ -188,7 +209,10 @@ public final class A49HidService
             this.ensureDisplayInitializedLocked();
             if (!this.displayInitialized)
                 return;
-            this.sendDisplayFramebufferLocked(this.displayRenderer.renderTrackFrame(trackType, trackName, mute, solo, volumeText, arm), false);
+            this.currentMessageText = null;
+            this.currentTrackFrame = new TrackFrame(trackType, trackName, mute, solo, volumeText, arm);
+            this.resetDisplayScrollState();
+            this.sendDisplayFramebufferLocked(this.displayRenderer.renderTrackFrame(trackType, trackName, mute, solo, volumeText, arm, 0), false);
         }
     }
 
@@ -212,8 +236,124 @@ public final class A49HidService
             this.ensureDisplayInitializedLocked();
             if (!this.displayInitialized)
                 return;
+            this.currentMessageText = null;
+            this.currentTrackFrame = null;
+            this.resetDisplayScrollState();
             this.sendDisplayFramebufferLocked(this.displayRenderer.renderOctaveFrame(octaveOffset), true);
         }
+    }
+
+    private void startDisplayAnimationThread()
+    {
+        final Thread thread = new Thread(this::displayAnimationLoop, "A49 display animation");
+        thread.setDaemon(true);
+        this.displayAnimationThread = thread;
+        thread.start();
+    }
+
+    private void stopDisplayAnimationThread()
+    {
+        final Thread thread = this.displayAnimationThread;
+        this.displayAnimationThread = null;
+        if (thread == null)
+            return;
+
+        thread.interrupt();
+        try
+        {
+            thread.join(500);
+        }
+        catch (final InterruptedException ex)
+        {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void displayAnimationLoop()
+    {
+        while (this.running.get())
+        {
+            try
+            {
+                Thread.sleep(ANIMATION_POLL_MS);
+            }
+            catch (final InterruptedException ex)
+            {
+                Thread.currentThread().interrupt();
+                return;
+            }
+
+            if (!this.running.get())
+                return;
+            if (System.currentTimeMillis() < this.nextDisplayScrollTimeMs)
+                continue;
+
+            this.nextDisplayScrollTimeMs = System.currentTimeMillis() + SCROLL_INTERVAL_MS;
+            this.advanceDisplayScroll();
+        }
+    }
+
+    private void advanceDisplayScroll()
+    {
+        if (!this.running.get())
+            return;
+
+        synchronized (this.writeLock)
+        {
+            if (this.device == null || !this.displayInitialized)
+                return;
+
+            final String message = this.currentMessageText;
+            final TrackFrame track = this.currentTrackFrame;
+            if (message == null && track == null)
+                return;
+
+            final int maxOffset = message != null
+                ? this.displayRenderer.messageScrollMaxOffset(message)
+                : this.displayRenderer.trackNameScrollMaxOffset(track.name);
+            if (maxOffset <= 0)
+                return;
+
+            if (this.displayScrollPauseTicks > 0)
+            {
+                this.displayScrollPauseTicks--;
+                return;
+            }
+
+            // Ping-pong: hold briefly at each edge, then reverse direction
+            // instead of snapping back to the start.
+            final int nextOffset = this.displayScrollOffset + (this.displayScrollDirection * SCROLL_STEP_PX);
+            if (nextOffset >= maxOffset)
+            {
+                this.displayScrollOffset = maxOffset;
+                this.displayScrollDirection = -1;
+                this.displayScrollPauseTicks = SCROLL_EDGE_PAUSE_TICKS;
+            }
+            else if (nextOffset <= 0)
+            {
+                this.displayScrollOffset = 0;
+                this.displayScrollDirection = 1;
+                this.displayScrollPauseTicks = SCROLL_EDGE_PAUSE_TICKS;
+            }
+            else
+            {
+                this.displayScrollOffset = nextOffset;
+            }
+
+            final byte[] framebuffer = message != null
+                ? this.displayRenderer.renderMessageFrame(message, this.displayScrollOffset)
+                : this.displayRenderer.renderTrackFrame(track.trackType, track.name, track.mute,
+                    track.solo, track.volumeText, track.arm, this.displayScrollOffset);
+            this.sendDisplayFramebufferLocked(framebuffer, false);
+        }
+    }
+
+    private void resetDisplayScrollState()
+    {
+        this.displayScrollOffset = 0;
+        this.displayScrollDirection = 1;
+        this.displayScrollPauseTicks = SCROLL_INITIAL_PAUSE_TICKS;
+        this.nextDisplayScrollTimeMs = System.currentTimeMillis() + SCROLL_INTERVAL_MS;
     }
 
     private void ensureDisplayInitializedLocked()
@@ -437,6 +577,27 @@ public final class A49HidService
 
         System.arraycopy(data, 0, report, 1, safeLength);
         return report;
+    }
+
+    private static final class TrackFrame
+    {
+        private final String trackType;
+        private final String name;
+        private final boolean mute;
+        private final boolean solo;
+        private final String volumeText;
+        private final boolean arm;
+
+        private TrackFrame(final String trackType, final String name, final boolean mute, final boolean solo,
+                           final String volumeText, final boolean arm)
+        {
+            this.trackType = trackType;
+            this.name = name;
+            this.mute = mute;
+            this.solo = solo;
+            this.volumeText = volumeText;
+            this.arm = arm;
+        }
     }
 
     private static boolean matchesText(final String actual, final String expectedSubstring)

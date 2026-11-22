@@ -87,6 +87,8 @@ available yet, build the extension from source — it takes one Maven command.
 ### Display and LEDs
 
 - 128×32 OLED track card with type icon, name, arm/solo/mute state and volume.
+- Long track names and message details scroll horizontally with a ping-pong
+  motion instead of wrapping onto a second line.
 - Transient cards for transport, browser, device and ARP actions.
 - Octave offset indicator.
 - Dim/bright LED feedback, latched transport/browser states and a reduced

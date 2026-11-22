@@ -232,6 +232,10 @@ The A49's 128×32 monochrome OLED shows:
 - transient action cards for transport, browser, device and ARP changes;
 - a transient octave indicator when the keyboard's octave offset changes.
 
+Long track names and message details scroll horizontally instead of wrapping
+onto a second line. The display ping-pongs between the text ends, pausing
+briefly at each end before reversing direction.
+
 The display is rendered locally by `A49DisplayRenderer` and sent over the
 keyboard's `0xE0` display report. It is not read back from the device.
 
