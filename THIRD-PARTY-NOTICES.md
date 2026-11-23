@@ -37,10 +37,29 @@ image, rfd, arboard, serde, serde_json and hidapi) are pinned in
 `tools/display-paint/Cargo.lock` and are fetched by Cargo. They are not
 vendored in this repository and retain their own licenses.
 
+JUnit Jupiter 5.11.4 is used for unit tests with Maven `test` scope. It is not
+bundled into the `.bwextension` and retains its own license.
+
 ## Display assets
 
-`src/main/resources/icons/` contains bitmap glyph and icon data used to render
-the A49's 128x32 display. These data files are bundled for hardware
-interoperability and were generated/curated for this project. If you
-redistribute a modified version of the project, review the provenance of these
-assets for your jurisdiction.
+The files in `src/main/resources/icons/` are bitmap data used to render the
+A49's 128×32 display. Their provenance is documented here rather than implied:
+
+- `charmap_font.json` is a 95-glyph bitmap font recovered by capturing the
+  display output of Native Instruments' official Komplete Kontrol software on a
+  character-map screen and cutting the resulting glyph strip into individual
+  glyphs. The capture and extraction process is described in
+  `docs/REVERSE_ENGINEERING.md`. No claim is made that these glyph bitmaps are
+  licensed for redistribution.
+- The remaining icon JSON files were rasterized from a "flat icon pack". The
+  source paths in the original converter manifest reference Bitwig Studio
+  resources such as `resources/icons/...`, `device_bitwig.svg` and
+  `u-he-preset.svg`. No license file or grant was supplied with that pack, so
+  the redistribution status of these converted icons is unresolved.
+
+These assets are bundled only to drive the A49 hardware. If you need an
+unambiguous redistribution story, replace them with original artwork or with
+font/icon sets under an explicit open license (for example OFL or CC0) before
+publishing derivative releases. See `docs/REVERSE_ENGINEERING.md` for the
+original extraction tooling and `src/main/resources/icons/` for the shipped
+data.

@@ -194,7 +194,7 @@ The eight knobs are remapped to one of four CC ranges. Use the **Left** and
 Incoming knob CCs that match any of those ranges are translated to the active
 page. All other MIDI is passed through unchanged. Unshifted Left/Right are not
 emitted as MIDI because they are used for page switching; Shift+Left/Right
-become Mute/Solo and are emitted as CC 58/59.
+become Mute/Solo and are emitted as CC 89/90.
 
 ### 4.3 Extra MIDI CCs for mapping
 
@@ -204,22 +204,25 @@ the HID-only controls available to Bitwig's MIDI mapping system. The value is
 
 | Action | CC | Action | CC |
 | --- | ---: | --- | ---: |
-| Play | 29 | Record | 30 |
-| Stop | 31 | Loop | 32 |
-| Metronome | 33 | Tempo | 34 |
-| Preset up | 35 | Preset down | 36 |
-| Ideas | 37 | Quantize | 38 |
-| Undo | 39 | Arp | 40 |
-| Scale | 41 | Shift | 42 |
-| Restart | 43 | Count-in | 44 |
-| Clear | 45 | Redo | 46 |
-| Automation write | 47 | Edit scale | 48 |
-| Edit arp | 49 | Browser | 50 |
-| Plug-in | 51 | MIDI editor | 52 |
-| Track | 53 | Device window | 54 |
-| Knob press | 55 | Left | 56 (not emitted) |
-| Right | 57 (not emitted) | Mute | 58 |
-| Solo | 59 | — | — |
+| Play | 60 | Record | 61 |
+| Stop | 62 | Loop | 63 |
+| Metronome | 64 | Tempo | 65 |
+| Preset up | 66 | Preset down | 67 |
+| Ideas | 68 | Quantize | 69 |
+| Undo | 70 | Arp | 71 |
+| Scale | 72 | Shift | 73 |
+| Restart | 74 | Count-in | 75 |
+| Clear | 76 | Redo | 77 |
+| Automation write | 78 | Edit scale | 79 |
+| Edit arp | 80 | Browser | 81 |
+| Plug-in | 82 | MIDI editor | 83 |
+| Track | 84 | Device window | 85 |
+| Knob press | 86 | Left | 87 (not emitted) |
+| Right | 88 (not emitted) | Mute | 89 |
+| Solo | 90 | — | — |
+
+The 60–90 block is deliberately separate from the knob CC ranges, so no
+button action shares a CC with a knob.
 
 ## 5. Display and LEDs
 
@@ -311,4 +314,5 @@ while testing. Both may try to own the HID interface, LEDs and display.
   database, touch strip or hardware arpeggiator UI.
 - The protocol is reverse-engineered and is not covered by a stability
   guarantee.
-- There are currently no automated tests.
+- Unit tests cover the decoder, mappings and LED builder; there are no
+  automated hardware-in-the-loop tests.

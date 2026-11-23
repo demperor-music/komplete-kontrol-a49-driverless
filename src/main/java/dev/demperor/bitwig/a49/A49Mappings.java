@@ -59,6 +59,14 @@ public final class A49Mappings
     public static final int MIDI_VALUE_ON = 127;
     public static final int MIDI_VALUE_OFF = 0;
 
+    /** CC ranges assigned to the eight knobs on each switchable page. */
+    public static final int[][] KNOB_CC_PAGES = new int[][] {
+        { 14, 15, 16, 17, 18, 19, 20, 21 },
+        { 22, 23, 24, 25, 26, 27, 28, 29 },
+        { 102, 103, 104, 105, 106, 107, 108, 109 },
+        { 110, 111, 112, 113, 114, 115, 116, 117 }
+    };
+
     public static final A49ComboMode DEFAULT_COMBO_MODE = A49ComboMode.NAMED;
 
     /** Bit positions of the physical buttons in the raw input report. */
@@ -113,38 +121,41 @@ public final class A49Mappings
         combos.put(A49Action.RIGHT, A49Action.SOLO);
         SHIFT_COMBOS = Collections.unmodifiableMap(combos);
 
+        // HID-only button actions use a dedicated 60-90 block. The old 29-59
+        // range overlapped knob CC page 2 at CC 29, so PLAY and the eighth
+        // knob emitted the same CC.
         final Map<A49Action, Integer> cc = new EnumMap<A49Action, Integer>(A49Action.class);
-        cc.put(A49Action.PLAY, Integer.valueOf(29));
-        cc.put(A49Action.RECORD, Integer.valueOf(30));
-        cc.put(A49Action.STOP, Integer.valueOf(31));
-        cc.put(A49Action.LOOP, Integer.valueOf(32));
-        cc.put(A49Action.METRONOME, Integer.valueOf(33));
-        cc.put(A49Action.TEMPO, Integer.valueOf(34));
-        cc.put(A49Action.PRESET_UP, Integer.valueOf(35));
-        cc.put(A49Action.PRESET_DOWN, Integer.valueOf(36));
-        cc.put(A49Action.IDEAS, Integer.valueOf(37));
-        cc.put(A49Action.QUANTIZE, Integer.valueOf(38));
-        cc.put(A49Action.UNDO, Integer.valueOf(39));
-        cc.put(A49Action.ARP, Integer.valueOf(40));
-        cc.put(A49Action.SCALE, Integer.valueOf(41));
-        cc.put(A49Action.SHIFT, Integer.valueOf(42));
-        cc.put(A49Action.RESTART, Integer.valueOf(43));
-        cc.put(A49Action.COUNT_IN, Integer.valueOf(44));
-        cc.put(A49Action.CLEAR, Integer.valueOf(45));
-        cc.put(A49Action.REDO, Integer.valueOf(46));
-        cc.put(A49Action.AUTO, Integer.valueOf(47));
-        cc.put(A49Action.EDIT_SCALE, Integer.valueOf(48));
-        cc.put(A49Action.EDIT_ARP, Integer.valueOf(49));
-        cc.put(A49Action.BROWSER, Integer.valueOf(50));
-        cc.put(A49Action.PLUG_IN, Integer.valueOf(51));
-        cc.put(A49Action.MIDI, Integer.valueOf(52));
-        cc.put(A49Action.TRACK, Integer.valueOf(53));
-        cc.put(A49Action.INSTANCE, Integer.valueOf(54));
-        cc.put(A49Action.BROWSER_KNOB_CLICK, Integer.valueOf(55));
-        cc.put(A49Action.LEFT, Integer.valueOf(56));
-        cc.put(A49Action.RIGHT, Integer.valueOf(57));
-        cc.put(A49Action.MUTE, Integer.valueOf(58));
-        cc.put(A49Action.SOLO, Integer.valueOf(59));
+        cc.put(A49Action.PLAY, Integer.valueOf(60));
+        cc.put(A49Action.RECORD, Integer.valueOf(61));
+        cc.put(A49Action.STOP, Integer.valueOf(62));
+        cc.put(A49Action.LOOP, Integer.valueOf(63));
+        cc.put(A49Action.METRONOME, Integer.valueOf(64));
+        cc.put(A49Action.TEMPO, Integer.valueOf(65));
+        cc.put(A49Action.PRESET_UP, Integer.valueOf(66));
+        cc.put(A49Action.PRESET_DOWN, Integer.valueOf(67));
+        cc.put(A49Action.IDEAS, Integer.valueOf(68));
+        cc.put(A49Action.QUANTIZE, Integer.valueOf(69));
+        cc.put(A49Action.UNDO, Integer.valueOf(70));
+        cc.put(A49Action.ARP, Integer.valueOf(71));
+        cc.put(A49Action.SCALE, Integer.valueOf(72));
+        cc.put(A49Action.SHIFT, Integer.valueOf(73));
+        cc.put(A49Action.RESTART, Integer.valueOf(74));
+        cc.put(A49Action.COUNT_IN, Integer.valueOf(75));
+        cc.put(A49Action.CLEAR, Integer.valueOf(76));
+        cc.put(A49Action.REDO, Integer.valueOf(77));
+        cc.put(A49Action.AUTO, Integer.valueOf(78));
+        cc.put(A49Action.EDIT_SCALE, Integer.valueOf(79));
+        cc.put(A49Action.EDIT_ARP, Integer.valueOf(80));
+        cc.put(A49Action.BROWSER, Integer.valueOf(81));
+        cc.put(A49Action.PLUG_IN, Integer.valueOf(82));
+        cc.put(A49Action.MIDI, Integer.valueOf(83));
+        cc.put(A49Action.TRACK, Integer.valueOf(84));
+        cc.put(A49Action.INSTANCE, Integer.valueOf(85));
+        cc.put(A49Action.BROWSER_KNOB_CLICK, Integer.valueOf(86));
+        cc.put(A49Action.LEFT, Integer.valueOf(87));
+        cc.put(A49Action.RIGHT, Integer.valueOf(88));
+        cc.put(A49Action.MUTE, Integer.valueOf(89));
+        cc.put(A49Action.SOLO, Integer.valueOf(90));
         DEFAULT_CC_BY_ACTION = Collections.unmodifiableMap(cc);
 
         final Map<A49Action, Integer> led = new EnumMap<A49Action, Integer>(A49Action.class);

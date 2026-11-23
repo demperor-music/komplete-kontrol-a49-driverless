@@ -220,6 +220,8 @@ cd <repository-directory>
 mvn clean package
 ```
 
+Run the unit tests with `mvn test`.
+
 The build produces:
 
 ```text
@@ -406,11 +408,13 @@ Bitwig's MIDI input handling.
   supported.
 - Linux is the primary platform. macOS and Windows code paths are best-effort.
 - The display font and icon set are fixed bitmap data; characters outside the
-  bundled set fall back to `?`.
+  bundled set fall back to `?`. Their redistribution provenance is unresolved;
+  see [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
 - The extension does not implement Native Instruments' browser, preset
   database, touch strip or hardware arpeggiator UI.
 - The protocol is reverse-engineered and not covered by a stability guarantee.
-- There are currently no automated tests.
+- Unit tests cover the decoder, mappings and LED builder; there are no
+  automated hardware-in-the-loop tests.
 
 ## Releases
 
@@ -455,6 +459,10 @@ Native Instruments, Komplete Kontrol and related names are trademarks of
 Native Instruments GmbH. Bitwig and Bitwig Studio are trademarks of Bitwig
 GmbH. All other trademarks are the property of their respective owners.
 
-No Native Instruments software, drivers or proprietary source code is included
-in this repository. The HID protocol implementation was produced for
-interoperability with hardware owned by the user.
+No Native Instruments software, drivers or source code is included in this
+repository. The HID protocol implementation was produced for interoperability
+with hardware owned by the user. One bundled display asset,
+`charmap_font.json`, was derived from the display output of NI's official
+software, and the other icons were converted from a Bitwig resource-derived
+icon pack with no license grant; see
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).

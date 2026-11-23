@@ -285,7 +285,10 @@ the glyph strip into individual glyphs.
 - The icons were converted from a flat SVG/PNG icon pack with
   `bitwig_flat_iconpack_to_a49_json.py`. The converter rasterizes, crops,
   scales to 14×14 or 15×14, and writes the monochrome JSON format used by the
-  display renderer (`1` = black background, `0` = lit pixel).
+  display renderer (`1` = black background, `0` = lit pixel). The original
+  manifest lists source paths such as `resources/icons/...`,
+  `device_bitwig.svg` and `u-he-preset.svg`, and no license file was supplied
+  with the pack. See `THIRD-PARTY-NOTICES.md` for the redistribution caveat.
 
 ## 8. From prototype to the Bitwig extension
 

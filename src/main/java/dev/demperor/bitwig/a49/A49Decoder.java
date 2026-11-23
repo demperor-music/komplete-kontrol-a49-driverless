@@ -104,9 +104,13 @@ public final class A49Decoder
             return 0;
         }
 
-        final int up = (this.previousEncoderValue.intValue() + 1) & 0x0F;
+        // The encoder is a 4-bit counter. Compare the previous value with the
+        // current one as a signed modulo-16 difference so fast spins that skip
+        // a count still report the correct direction and magnitude. The sign
+        // is inverted because clockwise turns decrease this counter.
+        final int delta = (this.previousEncoderValue.intValue() - current) & 0x0F;
         this.previousEncoderValue = Integer.valueOf(current);
-        return up == current ? -1 : 1;
+        return delta > 8 ? delta - 16 : delta;
     }
 
     private byte extractOctaveIndicator(final byte[] report)

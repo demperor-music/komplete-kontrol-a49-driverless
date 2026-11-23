@@ -4,6 +4,34 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Unit tests for the HID decoder, protocol mappings and LED state builder.
+- Automatic reconnect after the A49 is unplugged and replugged.
+- Display-asset provenance notes in `THIRD-PARTY-NOTICES.md`.
+
+### Changed
+
+- All HID output now runs on a single writer thread; controller-thread
+  notifications and LED refreshes no longer block on display packet delays.
+- HID-only button action CCs moved from 29–59 to 60–90 to avoid a collision
+  between PLAY (CC 29) and the eighth knob on CC page 2. **Existing MIDI
+  mappings for those buttons must be updated.**
+- Track type, volume and group state now use direct Bitwig API 25 calls instead
+  of reflection. `isMaster` remains reflective because it is not in API 25.
+
+### Fixed
+
+- `stop()` blanks the OLED before shutting it down; the display was previously
+  never blanked because the initialized flag was cleared too early.
+- Encoder decoding now uses a signed modulo-16 delta, so fast spins that skip a
+  count no longer reverse direction.
+- Quantize actions are invoked through the guarded action helper.
+- Documented the actual font and icon provenance instead of claiming the
+  display assets were generated for this project.
+
 ## [0.1.0] - 2026-11-22
 
 ### Added

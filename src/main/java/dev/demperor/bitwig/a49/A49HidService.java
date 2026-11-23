@@ -20,6 +20,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * several buttons are only exposed through HID reports. The class opens the
  * matching hidraw device, decodes input reports into {@link A49HidEvent}s and
  * writes LED and OLED output reports.</p>
+ *
+ * <p>All HID output is performed by one dedicated writer thread. Bitwig's
+ * controller thread and the HID input callback only publish the latest desired
+ * LED payload or display frame; they never block on device I/O. Display init
+ * and inter-packet delays therefore cannot stall the controller thread.</p>
  */
 public final class A49HidService
 {
@@ -33,7 +38,7 @@ public final class A49HidService
      */
     private static final byte[][] DISPLAY_STARTUP_LED_SEQUENCE = new byte[][] {
         hex("807c00007c7c007c7c7c7c7c7c00007c7c00007c7c7c"),
-        hex("807c00007c7c007c7c7c7c7c7c00007c7c00007c7c7c"),
+        hex("807c00007c7c007c7c7c7c7c7c7c00007c7c00007c7c7c"),
         hex("807c00000000007c00007c7c7c00007c7c0000007c7c"),
         hex("807e00000000007c00007c7c7c00000000007e7c0000"),
         hex("807e00000000007c00007c7c7c00000000007e7c0000"),
@@ -50,13 +55,17 @@ public final class A49HidService
     private static final int SCROLL_INITIAL_PAUSE_TICKS = 8;
     private static final int SCROLL_EDGE_PAUSE_TICKS = 12;
     private static final int ANIMATION_POLL_MS = 20;
+    private static final int RECONNECT_INTERVAL_MS = 500;
+    private static final int WRITER_IDLE_WAIT_MS = 100;
 
     private final ConcurrentLinkedQueue<A49HidEvent> eventQueue;
     private final A49Decoder decoder;
     private final A49LedState ledState;
     private final A49DisplayRenderer displayRenderer;
     private final AtomicBoolean running = new AtomicBoolean(false);
-    private final Object writeLock = new Object();
+    private final AtomicBoolean autoReconnect = new AtomicBoolean(false);
+    private final Object lifecycleLock = new Object();
+    private final Object writeSignal = new Object();
 
     private volatile HidDevice device;
     private volatile byte[] lastLedPayload;
@@ -66,7 +75,16 @@ public final class A49HidService
     private volatile Set<A49Action> latchedActions = EnumSet.noneOf(A49Action.class);
     private volatile byte lastOctaveIndicator = (byte) A49Mappings.INPUT_OCTAVE_STATE_BASE;
 
+    private volatile byte[] pendingLedPayload;
+    private volatile boolean ledPending;
+    private volatile byte[] pendingDisplayFramebuffer;
+    private volatile boolean displayPending;
+    private volatile boolean displayForce;
+
+    private volatile Thread writerThread;
     private volatile Thread displayAnimationThread;
+    private volatile Thread reconnectThread;
+
     private volatile String currentMessageText;
     private volatile TrackFrame currentTrackFrame;
     private volatile int displayScrollOffset;
@@ -87,47 +105,19 @@ public final class A49HidService
         if (!this.running.compareAndSet(false, true))
             return;
 
+        this.autoReconnect.set(true);
         try
         {
-            final HidDeviceInfo deviceInfo = this.findDevice();
-            this.device = PureJavaHidApi.openDevice(deviceInfo);
-            if (this.device == null)
-                throw new IOException("PureJavaHidApi.openDevice returned null.");
-
-            this.device.setDeviceRemovalListener(source -> this.running.set(false));
-            this.device.setInputReportListener((source, reportId, data, length) -> {
-                if (!this.running.get())
-                    return;
-                if (reportId != A49Mappings.REPORT_ID_INPUT)
-                    return;
-
-                final byte[] report = rebuildInputReport(reportId, data, length);
-                final A49Decoder.DecodedReport decoded = this.decoder.decode(report);
-
-                for (final A49HidEvent event : decoded.getEvents())
-                    this.eventQueue.offer(event);
-
-                if (decoded.getEncoderDelta() != 0)
-                    this.eventQueue.offer(A49HidEvent.encoderDelta(decoded.getEncoderDelta()));
-
-                final byte previousOctave = this.lastOctaveIndicator;
-                this.currentPhysicalButtons = EnumSet.copyOf(decoded.getPhysicalButtons());
-                this.lastOctaveIndicator = decoded.getOctaveIndicator();
-                this.updateLeds(false);
-
-                if (decoded.getOctaveIndicator() != previousOctave)
-                    this.showOctaveOffset(this.toOctaveOffset(decoded.getOctaveIndicator()));
-            });
-
-            this.currentPhysicalButtons = EnumSet.noneOf(A49Action.class);
-            this.latchedActions = EnumSet.noneOf(A49Action.class);
-            this.lastOctaveIndicator = (byte) A49Mappings.INPUT_OCTAVE_STATE_BASE;
-            this.updateLeds(true);
-            this.startDisplayAnimationThread();
+            synchronized (this.lifecycleLock)
+            {
+                this.openDeviceAndStartWorkers();
+            }
         }
         catch (final IOException | RuntimeException ex)
         {
             this.running.set(false);
+            this.stopWriterThread();
+            this.stopDisplayAnimationThread();
             final HidDevice currentDevice = this.device;
             this.device = null;
             if (currentDevice != null)
@@ -143,35 +133,43 @@ public final class A49HidService
             PureJavaHidApi.cleanup();
             throw ex;
         }
+        this.startReconnectThread();
     }
 
     public void stop()
     {
+        this.autoReconnect.set(false);
         this.running.set(false);
-        this.stopDisplayAnimationThread();
-        this.currentMessageText = null;
-        this.currentTrackFrame = null;
-        this.displayInitialized = false;
-        this.lastLedPayload = null;
-        this.lastDisplayFramebuffer = null;
-        final HidDevice currentDevice = this.device;
-        this.device = null;
+        this.stopReconnectThread();
 
-        if (currentDevice != null)
+        final HidDevice currentDevice;
+        synchronized (this.lifecycleLock)
         {
-            synchronized (this.writeLock)
+            this.stopDisplayAnimationThread();
+            this.stopWriterThread();
+            currentDevice = this.device;
+            this.device = null;
+
+            if (currentDevice != null)
             {
                 try
                 {
+                    // Blank while the display is still marked initialized;
+                    // resetting the flag first would skip this frame.
                     if (this.displayInitialized)
-                        this.sendDisplayFramebufferLocked(this.displayRenderer.renderBlankFrame(), true);
+                        this.sendDisplayFramebufferNow(currentDevice, this.displayRenderer.renderBlankFrame(), true);
                     this.sendFeatureReport(currentDevice, A49Mappings.REPORT_ID_FEATURE_F8, DISPLAY_SHUTDOWN_FEATURE);
                 }
                 catch (final IllegalStateException ignored)
                 {
                 }
+                currentDevice.close();
             }
-            currentDevice.close();
+
+            this.displayInitialized = false;
+            this.clearPendingWrites();
+            this.lastLedPayload = null;
+            this.lastDisplayFramebuffer = null;
         }
 
         PureJavaHidApi.cleanup();
@@ -179,41 +177,26 @@ public final class A49HidService
 
     public void showText(final String text)
     {
-        if (!this.running.get())
+        if (!this.running.get() || this.device == null)
             return;
 
-        synchronized (this.writeLock)
-        {
-            if (this.device == null)
-                return;
-            this.ensureDisplayInitializedLocked();
-            if (!this.displayInitialized)
-                return;
-            this.currentMessageText = text;
-            this.currentTrackFrame = null;
-            this.resetDisplayScrollState();
-            this.sendDisplayFramebufferLocked(this.displayRenderer.renderMessageFrame(text, 0), false);
-        }
+        this.currentMessageText = text;
+        this.currentTrackFrame = null;
+        this.resetDisplayScrollState();
+        this.requestDisplayFrame(this.displayRenderer.renderMessageFrame(text, 0), false);
     }
 
-
-    public void showTrackFrame(final String trackType, final String trackName, final boolean mute, final boolean solo, final String volumeText, final boolean arm)
+    public void showTrackFrame(final String trackType, final String trackName, final boolean mute, final boolean solo,
+                               final String volumeText, final boolean arm)
     {
-        if (!this.running.get())
+        if (!this.running.get() || this.device == null)
             return;
 
-        synchronized (this.writeLock)
-        {
-            if (this.device == null)
-                return;
-            this.ensureDisplayInitializedLocked();
-            if (!this.displayInitialized)
-                return;
-            this.currentMessageText = null;
-            this.currentTrackFrame = new TrackFrame(trackType, trackName, mute, solo, volumeText, arm);
-            this.resetDisplayScrollState();
-            this.sendDisplayFramebufferLocked(this.displayRenderer.renderTrackFrame(trackType, trackName, mute, solo, volumeText, arm, 0), false);
-        }
+        this.currentMessageText = null;
+        this.currentTrackFrame = new TrackFrame(trackType, trackName, mute, solo, volumeText, arm);
+        this.resetDisplayScrollState();
+        this.requestDisplayFrame(
+            this.displayRenderer.renderTrackFrame(trackType, trackName, mute, solo, volumeText, arm, 0), false);
     }
 
     public void setLatchedActions(final Set<A49Action> actions)
@@ -224,27 +207,217 @@ public final class A49HidService
         this.updateLeds(false);
     }
 
-    private void showOctaveOffset(final int octaveOffset)
+    private void openDeviceAndStartWorkers() throws IOException
+    {
+        final HidDeviceInfo deviceInfo = this.findDevice();
+        final HidDevice opened = PureJavaHidApi.openDevice(deviceInfo);
+        if (opened == null)
+            throw new IOException("PureJavaHidApi.openDevice returned null.");
+
+        this.device = opened;
+        opened.setDeviceRemovalListener(source -> this.handleDeviceRemoval());
+        opened.setInputReportListener((source, reportId, data, length) -> {
+            if (!this.running.get())
+                return;
+            if (reportId != A49Mappings.REPORT_ID_INPUT)
+                return;
+
+            final byte[] report = rebuildInputReport(reportId, data, length);
+            final A49Decoder.DecodedReport decoded = this.decoder.decode(report);
+
+            for (final A49HidEvent event : decoded.getEvents())
+                this.eventQueue.offer(event);
+
+            if (decoded.getEncoderDelta() != 0)
+                this.eventQueue.offer(A49HidEvent.encoderDelta(decoded.getEncoderDelta()));
+
+            final byte previousOctave = this.lastOctaveIndicator;
+            this.currentPhysicalButtons = EnumSet.copyOf(decoded.getPhysicalButtons());
+            this.lastOctaveIndicator = decoded.getOctaveIndicator();
+            this.updateLeds(false);
+
+            if (decoded.getOctaveIndicator() != previousOctave)
+                this.showOctaveOffset(this.toOctaveOffset(decoded.getOctaveIndicator()));
+        });
+
+        this.currentPhysicalButtons = EnumSet.noneOf(A49Action.class);
+        this.latchedActions = EnumSet.noneOf(A49Action.class);
+        this.lastOctaveIndicator = (byte) A49Mappings.INPUT_OCTAVE_STATE_BASE;
+        this.displayInitialized = false;
+        this.clearPendingWrites();
+        this.lastLedPayload = null;
+        this.lastDisplayFramebuffer = null;
+        this.startWriterThread();
+        this.updateLeds(true);
+        this.startDisplayAnimationThread();
+    }
+
+    private void handleDeviceRemoval()
     {
         if (!this.running.get())
             return;
 
-        synchronized (this.writeLock)
+        this.running.set(false);
+        this.device = null;
+        this.stopDisplayAnimationThread();
+        this.stopWriterThread();
+        this.displayInitialized = false;
+        this.clearPendingWrites();
+        this.lastLedPayload = null;
+        this.lastDisplayFramebuffer = null;
+    }
+
+    private void showOctaveOffset(final int octaveOffset)
+    {
+        if (!this.running.get() || this.device == null)
+            return;
+
+        this.currentMessageText = null;
+        this.currentTrackFrame = null;
+        this.resetDisplayScrollState();
+        this.requestDisplayFrame(this.displayRenderer.renderOctaveFrame(octaveOffset), true);
+    }
+
+    private void startWriterThread()
+    {
+        if (this.writerThread != null && this.writerThread.isAlive())
+            return;
+        final Thread thread = new Thread(this::writerLoop, "A49 HID writer");
+        thread.setDaemon(true);
+        this.writerThread = thread;
+        thread.start();
+    }
+
+    private void stopWriterThread()
+    {
+        final Thread thread = this.writerThread;
+        this.writerThread = null;
+        if (thread == null)
+            return;
+
+        thread.interrupt();
+        joinQuietly(thread);
+    }
+
+    private void writerLoop()
+    {
+        while (this.running.get())
         {
-            if (this.device == null)
-                return;
-            this.ensureDisplayInitializedLocked();
-            if (!this.displayInitialized)
-                return;
-            this.currentMessageText = null;
-            this.currentTrackFrame = null;
-            this.resetDisplayScrollState();
-            this.sendDisplayFramebufferLocked(this.displayRenderer.renderOctaveFrame(octaveOffset), true);
+            byte[] led = null;
+            byte[] frame = null;
+            boolean force = false;
+            final HidDevice currentDevice;
+
+            synchronized (this.writeSignal)
+            {
+                currentDevice = this.device;
+                if (currentDevice == null)
+                {
+                    if (!waitForWriterSignal())
+                        return;
+                    continue;
+                }
+
+                if (this.ledPending)
+                {
+                    led = this.pendingLedPayload;
+                    this.pendingLedPayload = null;
+                    this.ledPending = false;
+                }
+                if (this.displayPending)
+                {
+                    frame = this.pendingDisplayFramebuffer;
+                    this.pendingDisplayFramebuffer = null;
+                    this.displayPending = false;
+                    force = this.displayForce;
+                    this.displayForce = false;
+                }
+                if (led == null && frame == null)
+                {
+                    if (!waitForWriterSignal())
+                        return;
+                    continue;
+                }
+            }
+
+            if (frame != null)
+            {
+                if (!this.displayInitialized)
+                    this.ensureDisplayInitialized(currentDevice);
+                if (this.displayInitialized)
+                    this.sendDisplayFramebufferNow(currentDevice, frame, force);
+            }
+
+            if (led != null && this.sendLedPayload(currentDevice, led) >= 0)
+                this.lastLedPayload = Arrays.copyOf(led, led.length);
+        }
+    }
+
+    private boolean waitForWriterSignal()
+    {
+        try
+        {
+            this.writeSignal.wait(WRITER_IDLE_WAIT_MS);
+            return true;
+        }
+        catch (final InterruptedException ex)
+        {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    private void startReconnectThread()
+    {
+        if (this.reconnectThread != null && this.reconnectThread.isAlive())
+            return;
+        final Thread thread = new Thread(this::reconnectLoop, "A49 reconnect");
+        thread.setDaemon(true);
+        this.reconnectThread = thread;
+        thread.start();
+    }
+
+    private void stopReconnectThread()
+    {
+        final Thread thread = this.reconnectThread;
+        this.reconnectThread = null;
+        if (thread == null)
+            return;
+
+        thread.interrupt();
+        joinQuietly(thread);
+    }
+
+    private void reconnectLoop()
+    {
+        while (this.autoReconnect.get())
+        {
+            if (!this.running.get())
+            {
+                try
+                {
+                    if (this.running.compareAndSet(false, true))
+                    {
+                        synchronized (this.lifecycleLock)
+                        {
+                            if (this.running.get())
+                                this.openDeviceAndStartWorkers();
+                        }
+                    }
+                }
+                catch (final IOException | RuntimeException ignored)
+                {
+                    this.running.set(false);
+                }
+            }
+            sleepQuietly(RECONNECT_INTERVAL_MS);
         }
     }
 
     private void startDisplayAnimationThread()
     {
+        if (this.displayAnimationThread != null && this.displayAnimationThread.isAlive())
+            return;
         final Thread thread = new Thread(this::displayAnimationLoop, "A49 display animation");
         thread.setDaemon(true);
         this.displayAnimationThread = thread;
@@ -259,14 +432,7 @@ public final class A49HidService
             return;
 
         thread.interrupt();
-        try
-        {
-            thread.join(500);
-        }
-        catch (final InterruptedException ex)
-        {
-            Thread.currentThread().interrupt();
-        }
+        joinQuietly(thread);
     }
 
     private void displayAnimationLoop()
@@ -282,7 +448,6 @@ public final class A49HidService
                 Thread.currentThread().interrupt();
                 return;
             }
-
             if (!this.running.get())
                 return;
             if (System.currentTimeMillis() < this.nextDisplayScrollTimeMs)
@@ -295,57 +460,51 @@ public final class A49HidService
 
     private void advanceDisplayScroll()
     {
-        if (!this.running.get())
+        if (!this.running.get() || this.device == null || !this.displayInitialized)
             return;
 
-        synchronized (this.writeLock)
+        final String message = this.currentMessageText;
+        final TrackFrame track = this.currentTrackFrame;
+        if (message == null && track == null)
+            return;
+
+        final int maxOffset = message != null
+            ? this.displayRenderer.messageScrollMaxOffset(message)
+            : this.displayRenderer.trackNameScrollMaxOffset(track.name);
+        if (maxOffset <= 0)
+            return;
+
+        if (this.displayScrollPauseTicks > 0)
         {
-            if (this.device == null || !this.displayInitialized)
-                return;
-
-            final String message = this.currentMessageText;
-            final TrackFrame track = this.currentTrackFrame;
-            if (message == null && track == null)
-                return;
-
-            final int maxOffset = message != null
-                ? this.displayRenderer.messageScrollMaxOffset(message)
-                : this.displayRenderer.trackNameScrollMaxOffset(track.name);
-            if (maxOffset <= 0)
-                return;
-
-            if (this.displayScrollPauseTicks > 0)
-            {
-                this.displayScrollPauseTicks--;
-                return;
-            }
-
-            // Ping-pong: hold briefly at each edge, then reverse direction
-            // instead of snapping back to the start.
-            final int nextOffset = this.displayScrollOffset + (this.displayScrollDirection * SCROLL_STEP_PX);
-            if (nextOffset >= maxOffset)
-            {
-                this.displayScrollOffset = maxOffset;
-                this.displayScrollDirection = -1;
-                this.displayScrollPauseTicks = SCROLL_EDGE_PAUSE_TICKS;
-            }
-            else if (nextOffset <= 0)
-            {
-                this.displayScrollOffset = 0;
-                this.displayScrollDirection = 1;
-                this.displayScrollPauseTicks = SCROLL_EDGE_PAUSE_TICKS;
-            }
-            else
-            {
-                this.displayScrollOffset = nextOffset;
-            }
-
-            final byte[] framebuffer = message != null
-                ? this.displayRenderer.renderMessageFrame(message, this.displayScrollOffset)
-                : this.displayRenderer.renderTrackFrame(track.trackType, track.name, track.mute,
-                    track.solo, track.volumeText, track.arm, this.displayScrollOffset);
-            this.sendDisplayFramebufferLocked(framebuffer, false);
+            this.displayScrollPauseTicks--;
+            return;
         }
+
+        // Ping-pong: hold briefly at each edge, then reverse direction instead
+        // of snapping back to the start.
+        final int nextOffset = this.displayScrollOffset + (this.displayScrollDirection * SCROLL_STEP_PX);
+        if (nextOffset >= maxOffset)
+        {
+            this.displayScrollOffset = maxOffset;
+            this.displayScrollDirection = -1;
+            this.displayScrollPauseTicks = SCROLL_EDGE_PAUSE_TICKS;
+        }
+        else if (nextOffset <= 0)
+        {
+            this.displayScrollOffset = 0;
+            this.displayScrollDirection = 1;
+            this.displayScrollPauseTicks = SCROLL_EDGE_PAUSE_TICKS;
+        }
+        else
+        {
+            this.displayScrollOffset = nextOffset;
+        }
+
+        final byte[] framebuffer = message != null
+            ? this.displayRenderer.renderMessageFrame(message, this.displayScrollOffset)
+            : this.displayRenderer.renderTrackFrame(track.trackType, track.name, track.mute,
+                track.solo, track.volumeText, track.arm, this.displayScrollOffset);
+        this.requestDisplayFrame(framebuffer, false);
     }
 
     private void resetDisplayScrollState()
@@ -356,13 +515,57 @@ public final class A49HidService
         this.nextDisplayScrollTimeMs = System.currentTimeMillis() + SCROLL_INTERVAL_MS;
     }
 
-    private void ensureDisplayInitializedLocked()
+    private void requestDisplayFrame(final byte[] framebuffer, final boolean force)
     {
-        if (this.displayInitialized)
+        if (framebuffer == null || framebuffer.length != A49Mappings.DISPLAY_FRAMEBUFFER_LENGTH)
+            return;
+        if (!force && Arrays.equals(framebuffer, this.lastDisplayFramebuffer))
             return;
 
-        final HidDevice currentDevice = this.device;
-        if (currentDevice == null)
+        synchronized (this.writeSignal)
+        {
+            this.pendingDisplayFramebuffer = Arrays.copyOf(framebuffer, framebuffer.length);
+            this.displayPending = true;
+            this.displayForce = force;
+            this.writeSignal.notifyAll();
+        }
+    }
+
+    private void requestLedUpdate(final boolean force)
+    {
+        final byte[] payload = this.ledState.buildPayload(this.currentPhysicalButtons, this.latchedActions);
+        this.applyOctaveLedState(payload, this.lastOctaveIndicator);
+        if (!force && Arrays.equals(payload, this.lastLedPayload))
+            return;
+
+        synchronized (this.writeSignal)
+        {
+            this.pendingLedPayload = Arrays.copyOf(payload, payload.length);
+            this.ledPending = true;
+            this.writeSignal.notifyAll();
+        }
+    }
+
+    private void clearPendingWrites()
+    {
+        synchronized (this.writeSignal)
+        {
+            this.pendingLedPayload = null;
+            this.ledPending = false;
+            this.pendingDisplayFramebuffer = null;
+            this.displayPending = false;
+            this.displayForce = false;
+        }
+    }
+
+    private void updateLeds(final boolean force)
+    {
+        this.requestLedUpdate(force);
+    }
+
+    private void ensureDisplayInitialized(final HidDevice currentDevice)
+    {
+        if (this.displayInitialized)
             return;
 
         this.primeDisplayFeatureReports(currentDevice);
@@ -373,11 +576,11 @@ public final class A49HidService
         sleepQuietly(120);
 
         final byte[] blankFramebuffer = this.displayRenderer.renderBlankFrame();
-        this.sendDisplayFramebufferLocked(blankFramebuffer, true);
+        this.sendDisplayFramebufferNow(currentDevice, blankFramebuffer, true);
         if (this.lastDisplayFramebuffer != null)
         {
             this.displayInitialized = true;
-            this.updateLeds(true);
+            this.requestLedUpdate(true);
         }
     }
 
@@ -436,25 +639,6 @@ public final class A49HidService
         throw new IOException("Could not find the Komplete Kontrol A49 HID device via PureJavaHidApi.");
     }
 
-    private void updateLeds(final boolean force)
-    {
-        final byte[] payload = this.ledState.buildPayload(this.currentPhysicalButtons, this.latchedActions);
-        this.applyOctaveLedState(payload, this.lastOctaveIndicator);
-
-        if (!force && Arrays.equals(payload, this.lastLedPayload))
-            return;
-
-        synchronized (this.writeLock)
-        {
-            final HidDevice currentDevice = this.device;
-            if (currentDevice == null)
-                return;
-
-            if (this.sendLedPayload(currentDevice, payload) >= 0)
-                this.lastLedPayload = Arrays.copyOf(payload, payload.length);
-        }
-    }
-
     private void applyOctaveLedState(final byte[] payload, final byte octaveIndicator)
     {
         if (payload == null || payload.length <= A49Mappings.LED_FIRMWARE_MANAGED_END_INDEX)
@@ -477,20 +661,16 @@ public final class A49HidService
         return rawDelta / step;
     }
 
-    private void sendDisplayFramebufferLocked(final byte[] framebuffer, final boolean force)
+    private void sendDisplayFramebufferNow(final HidDevice hidDevice, final byte[] framebuffer, final boolean force)
     {
         if (framebuffer == null || framebuffer.length != A49Mappings.DISPLAY_FRAMEBUFFER_LENGTH)
             return;
         if (!force && Arrays.equals(framebuffer, this.lastDisplayFramebuffer))
             return;
 
-        final HidDevice currentDevice = this.device;
-        if (currentDevice == null)
-            return;
-
         final byte[] packetA = buildDisplayPacket((byte) 0x00, framebuffer, 0);
         final byte[] packetB = buildDisplayPacket((byte) 0x02, framebuffer, 2);
-        if (this.sendDisplayFullPacket(currentDevice, packetA, packetB))
+        if (this.sendDisplayFullPacket(hidDevice, packetA, packetB))
             this.lastDisplayFramebuffer = Arrays.copyOf(framebuffer, framebuffer.length);
     }
 
@@ -611,6 +791,18 @@ public final class A49HidService
     {
         final String osName = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
         return osName.contains("mac");
+    }
+
+    private static void joinQuietly(final Thread thread)
+    {
+        try
+        {
+            thread.join(500);
+        }
+        catch (final InterruptedException ex)
+        {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static void sleepQuietly(final int millis)

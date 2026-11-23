@@ -20,6 +20,7 @@ import com.bitwig.extension.controller.api.CursorTrack;
 import com.bitwig.extension.controller.api.InsertionPoint;
 import com.bitwig.extension.controller.api.MidiIn;
 import com.bitwig.extension.controller.api.NoteInput;
+import com.bitwig.extension.controller.api.Parameter;
 import com.bitwig.extension.controller.api.PopupBrowser;
 import com.bitwig.extension.controller.api.SettableBeatTimeValue;
 import com.bitwig.extension.controller.api.SettableEnumValue;
@@ -112,14 +113,6 @@ public class KompleteKontrolA49DriverlessExtension extends ControllerExtension
         ArpSetting.OVERLAP
     };
 
-    /** CC range assigned to the eight knobs on each page. */
-    private static final int[][] KNOB_CC_PAGES = new int[][] {
-        { 14, 15, 16, 17, 18, 19, 20, 21 },
-        { 22, 23, 24, 25, 26, 27, 28, 29 },
-        { 102, 103, 104, 105, 106, 107, 108, 109 },
-        { 110, 111, 112, 113, 114, 115, 116, 117 }
-    };
-
     protected KompleteKontrolA49DriverlessExtension(
             final KompleteKontrolA49DriverlessExtensionDefinition definition,
             final ControllerHost host)
@@ -170,21 +163,15 @@ public class KompleteKontrolA49DriverlessExtension extends ControllerExtension
         this.cursorTrack.solo().markInterested();
         this.cursorTrack.hasNext().markInterested();
         this.cursorTrack.hasPrevious().markInterested();
-        try
-        {
-            final Method trackTypeMethod = this.cursorTrack.getClass().getMethod("trackType");
-            final Object valueObject = trackTypeMethod.invoke(this.cursorTrack);
-            final Method markInterested = valueObject.getClass().getMethod("markInterested");
-            markInterested.invoke(valueObject);
-        }
-        catch (final ReflectiveOperationException ex)
-        {
-            // trackType is not available in every Bitwig API version.
-        }
-        this.markTrackVolumeInterestedReflective();
-        this.markTrackBooleanInterestedReflective("isMaster");
-        this.markTrackBooleanInterestedReflective("canHoldNoteData");
-        this.markTrackBooleanInterestedReflective("isGroup");
+        this.cursorTrack.trackType().markInterested();
+        final Parameter volume = this.cursorTrack.volume();
+        volume.markInterested();
+        volume.displayedValue().markInterested();
+        this.cursorTrack.canHoldNoteData().markInterested();
+        this.cursorTrack.isGroup().markInterested();
+        // isMaster() is not part of the API 25 Track interface, so this is the
+        // only track value that still needs a guarded reflective lookup.
+        this.markOptionalBooleanInterested("isMaster");
 
         this.cursorDevice = this.cursorTrack.createCursorDevice();
         this.cursorDevice.exists().markInterested();
@@ -434,8 +421,8 @@ public class KompleteKontrolA49DriverlessExtension extends ControllerExtension
                 break;
 
             case QUANTIZE:
-                this.application.getAction("quantize_again").invoke();
-                this.application.getAction("quantize_audio_again").invoke();
+                this.invokeActionIfPresent("quantize_again");
+                this.invokeActionIfPresent("quantize_audio_again");
                 break;
 
             case CLEAR:
@@ -731,13 +718,13 @@ public class KompleteKontrolA49DriverlessExtension extends ControllerExtension
 
     private void switchKnobCcPage(final int delta)
     {
-        this.knobCcPageIndex = Math.floorMod(this.knobCcPageIndex + delta, KNOB_CC_PAGES.length);
+        this.knobCcPageIndex = Math.floorMod(this.knobCcPageIndex + delta, A49Mappings.KNOB_CC_PAGES.length);
         this.notify(this.describeKnobCcPage());
     }
 
     private String describeKnobCcPage()
     {
-        final int[] page = KNOB_CC_PAGES[this.knobCcPageIndex];
+        final int[] page = A49Mappings.KNOB_CC_PAGES[this.knobCcPageIndex];
         return "Knobs Page " + (this.knobCcPageIndex + 1) + " — CC " + page[0] + "-" + page[page.length - 1];
     }
 
@@ -746,12 +733,12 @@ public class KompleteKontrolA49DriverlessExtension extends ControllerExtension
         final int knobIndex = this.findKnobIndex(cc);
         if (knobIndex < 0)
             return cc;
-        return KNOB_CC_PAGES[this.knobCcPageIndex][knobIndex];
+        return A49Mappings.KNOB_CC_PAGES[this.knobCcPageIndex][knobIndex];
     }
 
     private int findKnobIndex(final int cc)
     {
-        for (final int[] page : KNOB_CC_PAGES)
+        for (final int[] page : A49Mappings.KNOB_CC_PAGES)
         {
             for (int index = 0; index < page.length; index++)
             {
@@ -1037,48 +1024,20 @@ public class KompleteKontrolA49DriverlessExtension extends ControllerExtension
         }, 40);
     }
 
-    private void markTrackVolumeInterestedReflective()
-    {
-        try
-        {
-            final Method volumeMethod = this.cursorTrack.getClass().getMethod("volume");
-            final Object volume = volumeMethod.invoke(this.cursorTrack);
-            if (volume != null)
-            {
-                invokeNoArgIfPresent(volume, "markInterested");
-                final Object displayedValue = invokeNoArgIfPresent(volume, "displayedValue");
-                if (displayedValue != null)
-                    invokeNoArgIfPresent(displayedValue, "markInterested");
-            }
-        }
-        catch (final Exception ignored)
-        {
-        }
-    }
-
-    private void markTrackBooleanInterestedReflective(final String methodName)
+    private void markOptionalBooleanInterested(final String methodName)
     {
         try
         {
             final Method method = this.cursorTrack.getClass().getMethod(methodName);
             final Object valueObject = method.invoke(this.cursorTrack);
             if (valueObject != null)
-                invokeNoArgIfPresent(valueObject, "markInterested");
+            {
+                final Method markInterested = valueObject.getClass().getMethod("markInterested");
+                markInterested.invoke(valueObject);
+            }
         }
-        catch (final Exception ignored)
+        catch (final ReflectiveOperationException ignored)
         {
-        }
-    }
-
-    private static Object invokeNoArgIfPresent(final Object target, final String methodName)
-    {
-        try
-        {
-            return target.getClass().getMethod(methodName).invoke(target);
-        }
-        catch (final Exception ignored)
-        {
-            return null;
         }
     }
 
@@ -1119,55 +1078,20 @@ public class KompleteKontrolA49DriverlessExtension extends ControllerExtension
 
     private String safeTrackType()
     {
-        return this.tryReadTrackTypeReflective();
+        final String type = this.cursorTrack.trackType().get();
+        return type == null || type.trim().isEmpty() ? "ERROR" : type.trim().toLowerCase(Locale.ROOT);
     }
 
     private String safeTrackVolumeText()
     {
-        try
-        {
-            final Method volumeMethod = this.cursorTrack.getClass().getMethod("volume");
-            final Object volume = volumeMethod.invoke(this.cursorTrack);
-            if (volume == null)
-                return "--";
+        final Parameter volume = this.cursorTrack.volume();
+        if (volume == null)
+            return "--";
 
-            final Object displayedValue = invokeNoArgIfPresent(volume, "displayedValue");
-            if (displayedValue != null)
-            {
-                final Object textValue = invokeNoArgIfPresent(displayedValue, "get");
-                if (textValue != null)
-                {
-                    final String text = textValue.toString().trim();
-                    if (!text.isEmpty())
-                        return text;
-                }
-            }
-
-            final Object numericValue = invokeNoArgIfPresent(volume, "get");
-            if (numericValue instanceof Number)
-                return Integer.toString((int) Math.round(((Number) numericValue).doubleValue() * 100.0)) + "%";
-        }
-        catch (final Exception ignored)
-        {
-        }
-        return "--";
-    }
-
-    private String tryReadTrackTypeReflective()
-    {
-        try
-        {
-            final Method trackTypeMethod = this.cursorTrack.getClass().getMethod("trackType");
-            final Object valueObject = trackTypeMethod.invoke(this.cursorTrack);
-
-            final Method getter = valueObject.getClass().getMethod("get");
-            final Object value = getter.invoke(valueObject);
-            return value == null ? "ERROR" : value.toString().trim().toLowerCase(Locale.ROOT);
-        }
-        catch (final ReflectiveOperationException ex)
-        {
-            return "ERROR";
-        }
+        final String displayed = volume.displayedValue().get();
+        if (displayed != null && !displayed.trim().isEmpty())
+            return displayed.trim();
+        return Integer.toString((int) Math.round(volume.get() * 100.0)) + "%";
     }
 
     private String safeTrackName()
